@@ -41,7 +41,7 @@ npm run dev
 
 ## 🌐 Live Demo
 
-Visit the live application: [RoomieSplit App]
+Visit the live application: [RoomieSplit App](https://roomie-split.netlify.app/)
 
 ## 💡 Why Blockchain?
 
