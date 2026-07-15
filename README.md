@@ -39,7 +39,7 @@ npm run dev
 
 ## 🌐 Live Demo
 
-[RoomieSplit App](https://roomie-split.netlify.app/)
+[RoomieSplit App](https://roomiesplit1.netlify.app/)
 
 ## 🧱 What's actually on-chain today
 
