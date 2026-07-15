@@ -1,4 +1,4 @@
-import { useAnchorProgram, getGroupPDA, getExpensePDA } from '@/lib/anchor-client';
+import { useRoomieProgram, getGroupPDA, getExpensePDA } from '@/lib/anchor-client';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
@@ -25,7 +25,7 @@ export interface OnChainExpense {
 }
 
 export const useRoomiesplit = () => {
-  const { program } = useAnchorProgram();
+  const { program } = useRoomieProgram();
   const { publicKey, signTransaction } = useWallet();
   const { toast } = useToast();
 

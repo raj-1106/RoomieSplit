@@ -1,8 +1,9 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Roomiesplit } from "../target/types/roomiesplit";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { PublicKey, SystemProgram, Keypair } from "@solana/web3.js";
 import { BN } from "bn.js";
+import { assert } from "chai";
 
 describe("roomiesplit", () => {
   const provider = anchor.AnchorProvider.env();
@@ -32,12 +33,12 @@ describe("roomiesplit", () => {
 
   it("✅ Adds an expense (happy case)", async () => {
     const expensePda = PublicKey.findProgramAddressSync(
-      [Buffer.from("expense"), groupPda.toBuffer()],
+      [Buffer.from("expense"), groupPda.toBuffer(), new BN(0).toArrayLike(Buffer, "le", 8)],
       program.programId
     )[0];
 
     await program.methods
-      .addExpense("Dinner", new BN(50)) // ✅ BN, not number
+      .addExpense(new BN(50), "Dinner" ) // ✅ BN, not number
       .accounts({
         group: groupPda,
         expense: expensePda,
@@ -51,36 +52,46 @@ describe("roomiesplit", () => {
   });
 
   it("❌ Fails to create group with too many members", async () => {
-    try {
-      const [badGroupPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("group"), Buffer.from("bad")],
-        program.programId
-      );
+    const badCreator = Keypair.generate();
+    const sig = await provider.connection.requestAirdrop(
+      badCreator.publicKey,
+      anchor.web3.LAMPORTS_PER_SOL
+    );
+    await provider.connection.confirmTransaction(sig, "confirmed");
 
+    const [badGroupPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("group"), badCreator.publicKey.toBuffer()],
+      program.programId
+    );
+
+    try {
       await program.methods
-        .createGroup(Array(20).fill(provider.wallet.publicKey)) // too many
+        .createGroup(Array(20).fill(provider.wallet.publicKey))
         .accounts({
           group: badGroupPda,
-          payer: provider.wallet.publicKey,
+          creator: badCreator.publicKey, // correct field name, matches Rust
           systemProgram: SystemProgram.programId,
         })
+        .signers([badCreator]) // this keypair actually signs
         .rpc();
 
-      throw new Error("Expected failure but succeeded");
+      assert.fail("Expected transaction to throw TooManyMembers");
     } catch (err) {
-      console.log("Expected error (TooManyMembers):", err.error?.errorMessage);
+      console.log("Full Error:", err.toString());
+      assert.include(err.toString(), "TooManyMembers");
     }
   });
 
   it("❌ Fails to add expense with invalid amount", async () => {
+    const groupAccount = await program.account.group.fetch(groupPda);
+    const expenseCountBuf = groupAccount.expenseCount.toArrayLike(Buffer, "le", 8); // was hardcoded to 0
+    const badExpensePda = PublicKey.findProgramAddressSync(
+      [Buffer.from("expense"), groupPda.toBuffer(), expenseCountBuf],
+      program.programId
+    )[0];
     try {
-      const badExpensePda = PublicKey.findProgramAddressSync(
-        [Buffer.from("expense"), groupPda.toBuffer(), Buffer.from("bad")],
-        program.programId
-      )[0];
-
       await program.methods
-        .addExpense("Invalid", new BN(0)) // invalid amount
+        .addExpense(new BN(0), "Invalid")
         .accounts({
           group: groupPda,
           expense: badExpensePda,
@@ -89,9 +100,10 @@ describe("roomiesplit", () => {
         })
         .rpc();
 
-      throw new Error("Expected failure but succeeded");
+      assert.fail("Expected failure to throw InvalidAmount");
     } catch (err) {
-      console.log("Expected error (InvalidAmount):", err.error?.errorMessage);
+      console.log("Full Error:", err.toString());
+      assert.include(err.toString(), "InvalidAmount");
     }
   });
 });

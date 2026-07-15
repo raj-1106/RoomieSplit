@@ -17,9 +17,9 @@ export const CreateGroup = () => {
   const { toast } = useToast();
   const navigate = useNavigate();
   const { createGroup: createOnChainGroup } = useRoomiesplit();
-  
+
   console.log('CreateGroup rendered, connected:', connected, 'publicKey:', publicKey?.toString());
-  
+
   const [groupName, setGroupName] = useState('');
   const [groupDescription, setGroupDescription] = useState('');
   const [memberAddress, setMemberAddress] = useState('');
@@ -95,12 +95,12 @@ export const CreateGroup = () => {
     }
 
     setIsCreating(true);
-    
+
     try {
       if (useBlockchain) {
         // Create group on-chain using Anchor
         const result = await createOnChainGroup(members);
-        
+
         const groupData = {
           id: result.groupAddress.toString(),
           name: groupName,
@@ -313,8 +313,8 @@ export const CreateGroup = () => {
                 variant="hero"
                 size="lg"
               >
-                {isCreating 
-                  ? (useBlockchain ? 'Creating On-Chain Group...' : 'Creating Group...') 
+                {isCreating
+                  ? (useBlockchain ? 'Creating On-Chain Group...' : 'Creating Group...')
                   : (useBlockchain ? 'Create On-Chain Group' : 'Create Group')
                 }
               </Button>

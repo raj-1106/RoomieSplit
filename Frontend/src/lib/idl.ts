@@ -1,7 +1,7 @@
 import { Idl } from '@coral-xyz/anchor';
 
 const IDL_JSON = {
-  "address": "CFTz6LKRNHgWJhYqPvQFYVjYAiCnkdLbK2KM5FDoUgPg",
+  "address": "BzEpHaoaEGSQwnFbSv8gVwpxh4tQBn2WS1pDTjUMbc3c",
   "metadata": {
     "name": "roomiesplit",
     "version": "0.1.0",
@@ -237,6 +237,16 @@ const IDL_JSON = {
       "code": 6003,
       "name": "NoMembers",
       "msg": "Group has no members"
+    },
+    {
+      "code": 6004,
+      "name": "DescriptionTooLong",
+      "msg": "Description too long"
+    },
+    {
+      "code": 6005,
+      "name": "MathOverflow",
+      "msg": "Math overflow"
     }
   ],
   "types": [

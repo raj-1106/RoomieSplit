@@ -1,5 +1,4 @@
-
-import { AnchorProvider, Program, setProvider } from '@coral-xyz/anchor';
+import { AnchorProvider, Program, setProvider, BN } from '@coral-xyz/anchor';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { useMemo } from 'react';
@@ -12,9 +11,9 @@ if (typeof window !== 'undefined') {
 }
 
 // Your deployed program ID
-const PROGRAM_ID = new PublicKey('CFTz6LKRNHgWJhYqPvQFYVjYAiCnkdLbK2KM5FDoUgPg');
+const PROGRAM_ID = new PublicKey('BzEpHaoaEGSQwnFbSv8gVwpxh4tQBn2WS1pDTjUMbc3c');
 
-export const useAnchorProgram = () => {
+export function useRoomieProgram() {
   const { connection } = useConnection();
   const wallet = useWallet();
 
@@ -22,7 +21,7 @@ export const useAnchorProgram = () => {
     if (!wallet.publicKey || !wallet.signTransaction || !wallet.signAllTransactions) {
       return null;
     }
-    
+
     return new AnchorProvider(
       connection,
       {
@@ -36,7 +35,7 @@ export const useAnchorProgram = () => {
 
   const program = useMemo(() => {
     if (!provider) return null;
-    
+
     try {
       setProvider(provider);
       return new Program(IDL, provider);
@@ -47,7 +46,7 @@ export const useAnchorProgram = () => {
   }, [provider]);
 
   return { program, provider };
-};
+}
 
 export const getGroupPDA = (creator: PublicKey) => {
   return PublicKey.findProgramAddressSync(
@@ -56,12 +55,22 @@ export const getGroupPDA = (creator: PublicKey) => {
   );
 };
 
+/**
+ * Derives the expense PDA for a given group and expense count.
+ *
+ * IMPORTANT: expenseCount must be encoded as the raw 8-byte little-endian
+ * representation of the u64, matching Rust's `expense_count.to_le_bytes()`
+ * on the program side. Encoding it as a padded ASCII string (e.g. "00000001")
+ * produces a completely different byte sequence and will cause every call
+ * to fail with a ConstraintSeeds error, since the derived PDA won't match
+ * what the program expects.
+ */
 export const getExpensePDA = (groupKey: PublicKey, expenseCount: number) => {
   return PublicKey.findProgramAddressSync(
     [
       Buffer.from('expense'),
       groupKey.toBuffer(),
-      Buffer.from(expenseCount.toString().padStart(8, '0'))
+      new BN(expenseCount).toArrayLike(Buffer, 'le', 8),
     ],
     PROGRAM_ID
   );

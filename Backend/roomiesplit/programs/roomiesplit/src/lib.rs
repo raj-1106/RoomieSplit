@@ -1,74 +1,71 @@
 use anchor_lang::prelude::*;
 
-declare_id!("CFTz6LKRNHgWJhYqPvQFYVjYAiCnkdLbK2KM5FDoUgPg"); 
+declare_id!("BzEpHaoaEGSQwnFbSv8gVwpxh4tQBn2WS1pDTjUMbc3c"); 
 
 #[program]
-pub mod roomiesplit {
+pub mod roomiesplit{
     use super::*;
 
     pub fn create_group(ctx: Context<CreateGroup>, members: Vec<Pubkey>) -> Result<()> {
+        let mut members = members;
+        require!(members.len() < 5, RoomieError::TooManyMembers); // < 5, not <= 5, since creator adds one more
+        members.push(ctx.accounts.creator.key());
+
         let group = &mut ctx.accounts.group;
-
-        require!(
-            members.len() <= 5,
-            RoomieError::TooManyMembers
-        );
-
         group.creator = ctx.accounts.creator.key();
-        group.members = members;
-        group.members.push(ctx.accounts.creator.key()); // include creator
         group.total_expenses = 0;
         group.expense_count = 0;
+
+        // initialize a zeroed balance entry per member NOW, not in calculate_balances
+        group.balances = members
+            .iter()
+            .map(|m| Balance { member: *m, owed: 0, spent: 0 })
+            .collect();
+
+        group.members = members;
         Ok(())
     }
 
     pub fn add_expense(ctx: Context<AddExpense>, amount: u64, description: String) -> Result<()> {
-        let group = &mut ctx.accounts.group;
-
-        // only members can add
-        require!(
-            group.members.contains(&ctx.accounts.payer.key()),
-            RoomieError::NotMember
-        );
-
+        require!(description.len() <= 64, RoomieError::DescriptionTooLong); // fixes bug #3
         require!(amount > 0, RoomieError::InvalidAmount);
 
+        let group = &mut ctx.accounts.group;
+        let payer_key = ctx.accounts.payer.key();
+        require!(group.members.contains(&payer_key), RoomieError::NotMember);
+
         let expense = &mut ctx.accounts.expense;
-        expense.payer = ctx.accounts.payer.key();
+        expense.payer = payer_key;
         expense.amount = amount;
         expense.description = description;
         expense.group = group.key();
         expense.expense_id = group.expense_count;
 
-        group.total_expenses = group.total_expenses.checked_add(amount).unwrap();
-        group.expense_count = group.expense_count.checked_add(1).unwrap();
+        group.total_expenses = group.total_expenses.checked_add(amount).ok_or(RoomieError::MathOverflow)?;
+        group.expense_count = group.expense_count.checked_add(1).ok_or(RoomieError::MathOverflow)?;
+
+        // find this payer's balance entry and credit what they spent
+        let balance = group.balances.iter_mut()
+            .find(|b| b.member == payer_key)
+            .ok_or(RoomieError::NotMember)?;
+        balance.spent = balance.spent.checked_add(amount as i64).ok_or(RoomieError::MathOverflow)?;
 
         Ok(())
     }
 
     pub fn calculate_balances(ctx: Context<CalculateBalances>) -> Result<()> {
         let group = &mut ctx.accounts.group;
-
         let member_count = group.members.len() as u64;
         require!(member_count > 0, RoomieError::NoMembers);
 
-        let fair_share = group.total_expenses / member_count;
+        let fair_share = (group.total_expenses / member_count) as i64;
 
-        // Collect balances in a temporary vector
-        let mut new_balances: Vec<Balance> = Vec::new();
-            for member in group.members.iter() {
-            new_balances.push(Balance {
-            member: *member,
-            owed: fair_share as i64,
-            spent: 0,
-        });
+        for balance in group.balances.iter_mut() {
+            balance.owed = balance.spent - fair_share; // positive = owed money back, negative = owes money
+        }
+
+        Ok(())
     }
-
-    // Now assign (only one mutable borrow here)
-    group.balances = new_balances;
-
-    Ok(())
-    }   
 }
 
 #[derive(Accounts)]
@@ -171,4 +168,8 @@ pub enum RoomieError {
     InvalidAmount,
     #[msg("Group has no members")]
     NoMembers,
+    #[msg("Description too long")]
+    DescriptionTooLong,
+    #[msg("Math overflow")]
+    MathOverflow,
 }
