@@ -5,10 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { useRoomiesplit } from '@/hooks/use-roomiesplit';
-import { ArrowLeft, Plus, X, Users, Zap } from 'lucide-react';
+import { ArrowLeft, Plus, X, Users } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { PublicKey } from '@solana/web3.js';
 
@@ -25,7 +24,6 @@ export const CreateGroup = () => {
   const [memberAddress, setMemberAddress] = useState('');
   const [members, setMembers] = useState<string[]>([]);
   const [isCreating, setIsCreating] = useState(false);
-  const [useBlockchain, setUseBlockchain] = useState(false);
 
   const addMember = () => {
     if (!memberAddress.trim()) {
@@ -97,58 +95,31 @@ export const CreateGroup = () => {
     setIsCreating(true);
 
     try {
-      if (useBlockchain) {
-        // Create group on-chain using Anchor
-        const result = await createOnChainGroup(members);
+      // Create group on-chain using Anchor
+      const { groupId } = await createOnChainGroup(members);
 
-        const groupData = {
-          id: result.groupAddress.toString(),
-          name: groupName,
-          description: groupDescription,
-          creator: publicKey.toString(),
-          members: [publicKey.toString(), ...members],
-          expenses: [],
-          createdAt: new Date().toISOString(),
-          isOnChain: true,
-          groupAddress: result.groupAddress.toString(),
-        };
+      // Also store in localStorage for UI consistency
+      const indexEntry = {
+        creator: publicKey.toString(),
+        groupId,
+        name: groupName,
+        description: groupDescription,
+      };
+      
+      const existingIndex = JSON.parse(localStorage.getItem('groupIndex') || '[]');
+      localStorage.setItem('groupIndex', JSON.stringify([...existingIndex, indexEntry]));
 
-        // Also store in localStorage for UI consistency
-        const existingGroups = JSON.parse(localStorage.getItem('groups') || '[]');
-        localStorage.setItem('groups', JSON.stringify([...existingGroups, groupData]));
-
-        toast({
-          title: "On-Chain Group Created!",
-          description: `Successfully created "${groupName}" on Solana blockchain`,
-        });
-      } else {
-        // Create mock group for testing
-        const groupData = {
-          id: Date.now().toString(),
-          name: groupName,
-          description: groupDescription,
-          creator: publicKey.toString(),
-          members: [publicKey.toString(), ...members],
-          expenses: [],
-          createdAt: new Date().toISOString(),
-          isOnChain: false,
-        };
-
-        const existingGroups = JSON.parse(localStorage.getItem('groups') || '[]');
-        localStorage.setItem('groups', JSON.stringify([...existingGroups, groupData]));
-
-        toast({
-          title: "Mock Group Created!",
-          description: `Successfully created "${groupName}" with ${members.length + 1} members`,
-        });
-      }
+      toast({
+        title: "On-Chain Group Created!",
+        description: `Successfully created "${groupName}" on Solana blockchain`,
+      });
 
       navigate('/dashboard');
     } catch (error) {
       console.error('Error creating group:', error);
       toast({
         title: "Error",
-        description: useBlockchain ? "Failed to create group on blockchain" : "Failed to create group",
+        description: "Failed to create group",
         variant: "destructive",
       });
     } finally {
@@ -204,26 +175,6 @@ export const CreateGroup = () => {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Blockchain Toggle */}
-              <div className="flex items-center justify-between p-4 bg-primary/10 rounded-lg border border-primary/20">
-                <div className="flex items-center space-x-3">
-                  <Zap className="h-5 w-5 text-primary" />
-                  <div>
-                    <Label htmlFor="blockchain-toggle" className="font-medium">
-                      Use Blockchain
-                    </Label>
-                    <p className="text-sm text-muted-foreground">
-                      Create group on Solana blockchain (requires deployed contract)
-                    </p>
-                  </div>
-                </div>
-                <Switch
-                  id="blockchain-toggle"
-                  checked={useBlockchain}
-                  onCheckedChange={setUseBlockchain}
-                />
-              </div>
-
               {/* Group Name */}
               <div className="space-y-2">
                 <Label htmlFor="groupName">Group Name *</Label>
@@ -313,17 +264,8 @@ export const CreateGroup = () => {
                 variant="hero"
                 size="lg"
               >
-                {isCreating
-                  ? (useBlockchain ? 'Creating On-Chain Group...' : 'Creating Group...')
-                  : (useBlockchain ? 'Create On-Chain Group' : 'Create Group')
-                }
+                {isCreating ? 'Creating Group...' : 'Create Group'}
               </Button>
-
-              {useBlockchain && (
-                <p className="text-xs text-muted-foreground text-center">
-                  This will create a group on the Solana blockchain using your deployed Anchor program
-                </p>
-              )}
             </CardContent>
           </Card>
         </div>

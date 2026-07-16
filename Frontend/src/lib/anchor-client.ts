@@ -48,9 +48,9 @@ export function useRoomieProgram() {
   return { program, provider };
 }
 
-export const getGroupPDA = (creator: PublicKey) => {
+export const getGroupPDA = (creator: PublicKey, groupId: BN | number) => {
   return PublicKey.findProgramAddressSync(
-    [Buffer.from('group'), creator.toBuffer()],
+    [Buffer.from('group'), creator.toBuffer(), new BN(groupId).toArrayLike(Buffer, 'le', 8)],
     PROGRAM_ID
   );
 };

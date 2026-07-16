@@ -13,16 +13,17 @@ describe("roomiesplit", () => {
   let groupPda: PublicKey;
 
   it("✅ Creates a group (happy case)", async () => {
+    const groupId = new BN(1);
     [groupPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("group"), provider.wallet.publicKey.toBuffer()],
+      [Buffer.from("group"), provider.wallet.publicKey.toBuffer(), groupId.toArrayLike(Buffer, "le", 8)],
       program.programId
     );
 
     await program.methods
-      .createGroup([provider.wallet.publicKey]) // only members vector
+      .createGroup(groupId, [provider.wallet.publicKey])
       .accounts({
         group: groupPda,
-        payer: provider.wallet.publicKey,
+        creator: provider.wallet.publicKey,
         systemProgram: SystemProgram.programId,
       })
       .rpc();
@@ -59,14 +60,15 @@ describe("roomiesplit", () => {
     );
     await provider.connection.confirmTransaction(sig, "confirmed");
 
+    const groupId = new BN(2);
     const [badGroupPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("group"), badCreator.publicKey.toBuffer()],
+      [Buffer.from("group"), badCreator.publicKey.toBuffer(), groupId.toArrayLike(Buffer, "le", 8)],
       program.programId
     );
 
     try {
       await program.methods
-        .createGroup(Array(20).fill(provider.wallet.publicKey))
+        .createGroup(groupId, Array(20).fill(provider.wallet.publicKey))
         .accounts({
           group: badGroupPda,
           creator: badCreator.publicKey, // correct field name, matches Rust

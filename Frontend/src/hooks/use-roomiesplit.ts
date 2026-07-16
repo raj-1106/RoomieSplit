@@ -36,10 +36,11 @@ export const useRoomiesplit = () => {
 
     try {
       const members = memberAddresses.map(addr => new PublicKey(addr));
-      const [groupPDA] = getGroupPDA(publicKey);
+      const groupId = new BN(Date.now()).mul(new BN(1000)).add(new BN(Math.floor(Math.random() * 1000)));
+      const [groupPDA] = getGroupPDA(publicKey, groupId);
 
       const tx = await (program as any).methods
-        .createGroup(members)
+        .createGroup(groupId, members)
         .accounts({
           group: groupPDA,
           creator: publicKey,
@@ -52,7 +53,7 @@ export const useRoomiesplit = () => {
         description: `Transaction: ${tx.slice(0, 8)}...`,
       });
 
-      return { groupAddress: groupPDA, transaction: tx };
+      return { groupAddress: groupPDA, groupId: groupId.toString(), transaction: tx };
     } catch (error) {
       console.error('Error creating group:', error);
       toast({
@@ -66,15 +67,17 @@ export const useRoomiesplit = () => {
 
   const addExpense = async (
     groupCreator: PublicKey,
+    groupId: BN | number,
     amount: number,
-    description: string
+    description: string,
+    paidByAddress?: string
   ) => {
     if (!program || !publicKey || !signTransaction) {
       throw new Error('Wallet not connected or program not available');
     }
 
     try {
-      const [groupPDA] = getGroupPDA(groupCreator);
+      const [groupPDA] = getGroupPDA(groupCreator, groupId);
       
       // Fetch group to get current expense count
       const groupAccount = await (program as any).account.group.fetch(groupPDA) as OnChainGroup;
@@ -82,15 +85,19 @@ export const useRoomiesplit = () => {
       
       const [expensePDA] = getExpensePDA(groupPDA, expenseCount);
 
-      // Convert amount to lamports (assuming amount is in SOL)
-      const amountLamports = new BN(amount * 1000000000); // 1 SOL = 1B lamports
+      // Store amount in paise (INR × 100) as the on-chain u64 amount
+      const amountPaise = new BN(Math.round(amount * 100));
+
+      // paid_by is an instruction argument — who to credit in balance tracking
+      // The connected wallet (publicKey) always signs and pays tx fees
+      const paidByPubkey = paidByAddress ? new PublicKey(paidByAddress) : publicKey;
 
       const tx = await (program as any).methods
-        .addExpense(amountLamports, description)
+        .addExpense(amountPaise, description, paidByPubkey)
         .accounts({
           group: groupPDA,
           expense: expensePDA,
-          payer: publicKey,
+          payer: publicKey,  // always the connected wallet (signer)
           systemProgram: SystemProgram.programId,
         })
         .rpc();
@@ -112,13 +119,13 @@ export const useRoomiesplit = () => {
     }
   };
 
-  const calculateBalances = async (groupCreator: PublicKey) => {
+  const calculateBalances = async (groupCreator: PublicKey, groupId: BN | number) => {
     if (!program || !publicKey) {
       throw new Error('Wallet not connected or program not available');
     }
 
     try {
-      const [groupPDA] = getGroupPDA(groupCreator);
+      const [groupPDA] = getGroupPDA(groupCreator, groupId);
 
       const tx = await (program as any).methods
         .calculateBalances()
@@ -144,11 +151,11 @@ export const useRoomiesplit = () => {
     }
   };
 
-  const fetchGroup = async (groupCreator: PublicKey): Promise<OnChainGroup | null> => {
+  const fetchGroup = async (groupCreator: PublicKey, groupId: BN | number): Promise<OnChainGroup | null> => {
     if (!program) return null;
 
     try {
-      const [groupPDA] = getGroupPDA(groupCreator);
+      const [groupPDA] = getGroupPDA(groupCreator, groupId);
       const groupAccount = await (program as any).account.group.fetch(groupPDA) as OnChainGroup;
       return groupAccount;
     } catch (error) {
@@ -157,11 +164,11 @@ export const useRoomiesplit = () => {
     }
   };
 
-  const fetchExpenses = async (groupCreator: PublicKey): Promise<OnChainExpense[]> => {
+  const fetchExpenses = async (groupCreator: PublicKey, groupId: BN | number): Promise<OnChainExpense[]> => {
     if (!program) return [];
 
     try {
-      const [groupPDA] = getGroupPDA(groupCreator);
+      const [groupPDA] = getGroupPDA(groupCreator, groupId);
       const groupAccount = await (program as any).account.group.fetch(groupPDA) as OnChainGroup;
       const expenseCount = groupAccount.expenseCount.toNumber();
 

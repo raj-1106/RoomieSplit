@@ -1,169 +1,147 @@
 import { useState, useEffect } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
+import { PublicKey } from '@solana/web3.js';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { ArrowLeft, Plus, Users, Receipt, TrendingUp, TrendingDown } from 'lucide-react';
+import { useRoomiesplit, OnChainGroup, OnChainExpense } from '@/hooks/use-roomiesplit';
+import { ArrowLeft, Plus, Users, Receipt, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-interface Expense {
-  id: string;
-  description: string;
-  amount: number;
-  paidBy: string;
-  participants: string[];
-  date: string;
-}
-
-interface Group {
-  id: string;
+// Local index of which on-chain groups this user created — localStorage here
+// only stores enough to know WHICH group PDAs to fetch, not the group's actual
+// data. All balances, expenses, and member lists come from the chain, fetched
+// fresh each time. Note: this only surfaces groups the connected wallet
+// CREATED, not groups they were added to as a member — getUserGroups() filters
+// by the creator field, so a member-only view would need a separate lookup.
+interface GroupIndexEntry {
+  creator: string;
+  groupId: string;
   name: string;
   description: string;
-  creator: string;
-  members: string[];
-  expenses: Expense[];
-  createdAt: string;
 }
 
 export const GroupDashboard = () => {
   const { connected, publicKey } = useWallet();
   const { toast } = useToast();
   const navigate = useNavigate();
-  
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
+  const { addExpense: addExpenseOnChain, calculateBalances: calculateBalancesOnChain, fetchGroup, fetchExpenses } = useRoomiesplit();
+
+  const [groupIndex, setGroupIndex] = useState<GroupIndexEntry[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [onChainGroup, setOnChainGroup] = useState<OnChainGroup | null>(null);
+  const [expenses, setExpenses] = useState<OnChainExpense[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
-  
-  // Add expense form state
+
   const [expenseDescription, setExpenseDescription] = useState('');
   const [expenseAmount, setExpenseAmount] = useState('');
-  const [expensePaidBy, setExpensePaidBy] = useState('');
-  const [expenseParticipants, setExpenseParticipants] = useState<string[]>([]);
+  const [expensePaidBy, setExpensePaidBy] = useState<string>('');
+  const [isSubmittingExpense, setIsSubmittingExpense] = useState(false);
 
   useEffect(() => {
     if (connected) {
-      loadGroups();
+      const savedIndex = JSON.parse(localStorage.getItem('groupIndex') || '[]') as GroupIndexEntry[];
+      setGroupIndex(savedIndex);
+      if (savedIndex.length > 0 && !selectedGroupId) {
+        setSelectedGroupId(savedIndex[0].groupId);
+      }
     }
   }, [connected]);
 
-  const loadGroups = () => {
-    const savedGroups = JSON.parse(localStorage.getItem('groups') || '[]') as Group[];
-    const userGroups = savedGroups.filter(group => 
-      group.members.includes(publicKey?.toString() || '')
-    );
-    setGroups(userGroups);
-    if (userGroups.length > 0 && !selectedGroup) {
-      setSelectedGroup(userGroups[0]);
+  useEffect(() => {
+    if (selectedGroupId) {
+      const entry = groupIndex.find(g => g.groupId === selectedGroupId);
+      if (entry) {
+        loadGroupData(entry.creator, entry.groupId);
+      }
+    }
+  }, [selectedGroupId, groupIndex]);
+
+  const loadGroupData = async (creatorAddress: string, groupId: string) => {
+    setIsLoading(true);
+    try {
+      const creatorPk = new PublicKey(creatorAddress);
+      const [group, groupExpenses] = await Promise.all([
+        fetchGroup(creatorPk, groupId),
+        fetchExpenses(creatorPk, groupId),
+      ]);
+      setOnChainGroup(group);
+      setExpenses(groupExpenses);
+    } catch (error) {
+      console.error('Error loading group data:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load group data from chain',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const addExpense = () => {
-    if (!selectedGroup || !expenseDescription.trim() || !expenseAmount || !expensePaidBy) {
+  const handleAddExpense = async () => {
+    const entry = groupIndex.find(g => g.groupId === selectedGroupId);
+    if (!entry || !expenseDescription.trim() || !expenseAmount || !expensePaidBy) {
       toast({
-        title: "Missing Information",
-        description: "Please fill in all required fields",
-        variant: "destructive",
+        title: 'Missing Information',
+        description: 'Please fill in all required fields including who paid',
+        variant: 'destructive',
       });
       return;
     }
 
-    const newExpense: Expense = {
-      id: Date.now().toString(),
-      description: expenseDescription,
-      amount: parseFloat(expenseAmount),
-      paidBy: expensePaidBy,
-      participants: expenseParticipants.length > 0 ? expenseParticipants : selectedGroup.members,
-      date: new Date().toISOString(),
-    };
+    setIsSubmittingExpense(true);
+    try {
+      const creatorPk = new PublicKey(entry.creator);
+      await addExpenseOnChain(creatorPk, entry.groupId, parseFloat(expenseAmount), expenseDescription.trim(), expensePaidBy);
 
-    const updatedGroup = {
-      ...selectedGroup,
-      expenses: [...selectedGroup.expenses, newExpense]
-    };
+      // recalculate balances on-chain immediately so the dashboard reflects the new expense
+      await calculateBalancesOnChain(creatorPk, entry.groupId);
+      await loadGroupData(entry.creator, entry.groupId);
 
-    const allGroups = JSON.parse(localStorage.getItem('groups') || '[]') as Group[];
-    const updatedGroups = allGroups.map(group => 
-      group.id === selectedGroup.id ? updatedGroup : group
-    );
-
-    localStorage.setItem('groups', JSON.stringify(updatedGroups));
-    setSelectedGroup(updatedGroup);
-    setGroups(prev => prev.map(group => 
-      group.id === selectedGroup.id ? updatedGroup : group
-    ));
-
-    // Reset form
-    setExpenseDescription('');
-    setExpenseAmount('');
-    setExpensePaidBy('');
-    setExpenseParticipants([]);
-    setIsAddExpenseOpen(false);
-
-    toast({
-      title: "Expense Added!",
-      description: `Added "${expenseDescription}" for ₹${expenseAmount}`,
-    });
+      setExpenseDescription('');
+      setExpenseAmount('');
+      setExpensePaidBy('');
+      setIsAddExpenseOpen(false);
+    } catch (error) {
+      // addExpenseOnChain already surfaces a toast on failure
+      console.error('Error adding expense:', error);
+    } finally {
+      setIsSubmittingExpense(false);
+    }
   };
 
-  const calculateBalances = () => {
-    if (!selectedGroup) return {};
-    
-    const balances: { [key: string]: number } = {};
-    
-    // Initialize balances
-    selectedGroup.members.forEach(member => {
-      balances[member] = 0;
-    });
+  const formatAddress = (address: string) => `${address.slice(0, 8)}...${address.slice(-8)}`;
 
-    // Calculate what each person owes/is owed
-    selectedGroup.expenses.forEach(expense => {
-      const perPersonShare = expense.amount / expense.participants.length;
-      
-      // Person who paid gets credited
-      balances[expense.paidBy] += expense.amount;
-      
-      // Each participant owes their share
-      expense.participants.forEach(participant => {
-        balances[participant] -= perPersonShare;
-      });
-    });
-
-    return balances;
-  };
-
-  const formatAddress = (address: string) => {
-    return `${address.slice(0, 8)}...${address.slice(-8)}`;
-  };
-
+  // Uses the real on-chain balances (owed = spent - fair_share, computed by the
+  // program) instead of recomputing balance math client-side.
   const getSettlements = () => {
-    const balances = calculateBalances();
-    const settlements: Array<{from: string, to: string, amount: number}> = [];
-    
-    const creditors = Object.entries(balances).filter(([_, balance]) => balance > 0);
-    const debtors = Object.entries(balances).filter(([_, balance]) => balance < 0);
-    
-    creditors.forEach(([creditor, creditAmount]) => {
-      debtors.forEach(([debtor, debtAmount]) => {
-        if (Math.abs(debtAmount) > 0.01 && creditAmount > 0.01) {
-          const settleAmount = Math.min(creditAmount, Math.abs(debtAmount));
-          settlements.push({
-            from: debtor,
-            to: creditor,
-            amount: settleAmount
-          });
-          
-          balances[creditor] -= settleAmount;
-          balances[debtor] += settleAmount;
-        }
-      });
-    });
-    
-    return settlements.filter(s => s.amount > 0.01);
+    if (!onChainGroup) return [];
+
+    const balances = onChainGroup.balances.map(b => ({
+      member: b.member.toString(),
+      owed: b.owed.toNumber() / 100, // paise -> INR
+    }));
+
+    const settlements: Array<{ from: string; to: string; amount: number }> = [];
+    const creditors = balances.filter(b => b.owed > 0).map(b => ({ ...b }));
+    const debtors = balances.filter(b => b.owed < 0).map(b => ({ ...b, owed: -b.owed }));
+
+    for (const creditor of creditors) {
+      for (const debtor of debtors) {
+        if (creditor.owed <= 0.000001 || debtor.owed <= 0.000001) continue;
+        const settleAmount = Math.min(creditor.owed, debtor.owed);
+        settlements.push({ from: debtor.member, to: creditor.member, amount: settleAmount });
+        creditor.owed -= settleAmount;
+        debtor.owed -= settleAmount;
+      }
+    }
+
+    return settlements.filter(s => s.amount > 0.000001);
   };
 
   if (!connected) {
@@ -172,9 +150,7 @@ export const GroupDashboard = () => {
         <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 max-w-md">
           <CardHeader>
             <CardTitle>Wallet Required</CardTitle>
-            <CardDescription>
-              Please connect your wallet to view your dashboard
-            </CardDescription>
+            <CardDescription>Please connect your wallet to view your dashboard</CardDescription>
           </CardHeader>
           <CardContent>
             <Button variant="wallet" onClick={() => navigate('/')} className="w-full">
@@ -186,14 +162,15 @@ export const GroupDashboard = () => {
     );
   }
 
-  if (groups.length === 0) {
+  if (groupIndex.length === 0) {
     return (
       <div className="min-h-screen bg-gradient-hero flex items-center justify-center">
         <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 max-w-md">
           <CardHeader>
             <CardTitle>No Groups Found</CardTitle>
             <CardDescription>
-              You haven't joined any groups yet. Create your first group to get started!
+              You haven't created any on-chain groups yet. Note: this dashboard only shows groups
+              you created — groups you were added to as a member aren't listed here yet.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -206,20 +183,15 @@ export const GroupDashboard = () => {
     );
   }
 
-  const balances = calculateBalances();
   const settlements = getSettlements();
+  const selectedIndexEntry = groupIndex.find(g => g.groupId === selectedGroupId);
 
   return (
     <div className="min-h-screen bg-gradient-hero">
       <div className="container mx-auto px-4 py-8">
-        {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div className="flex items-center">
-            <Button
-              variant="ghost"
-              onClick={() => navigate('/')}
-              className="mr-4"
-            >
+            <Button variant="ghost" onClick={() => navigate('/')} className="mr-4">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back
             </Button>
@@ -232,7 +204,6 @@ export const GroupDashboard = () => {
         </div>
 
         <div className="grid lg:grid-cols-3 gap-8">
-          {/* Group Selection */}
           <div className="lg:col-span-1">
             <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
               <CardHeader>
@@ -242,37 +213,40 @@ export const GroupDashboard = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {groups.map(group => (
+                {groupIndex.map(entry => (
                   <button
-                    key={group.id}
-                    onClick={() => setSelectedGroup(group)}
+                    key={entry.groupId}
+                    onClick={() => setSelectedGroupId(entry.groupId)}
                     className={`w-full text-left p-3 rounded-lg transition-all ${
-                      selectedGroup?.id === group.id 
-                        ? 'bg-primary/20 border-primary/40' 
-                        : 'bg-muted/30 hover:bg-muted/50'
+                      selectedGroupId === entry.groupId ? 'bg-primary/20 border-primary/40' : 'bg-muted/30 hover:bg-muted/50'
                     } border`}
                   >
-                    <h3 className="font-medium">{group.name}</h3>
-                    <p className="text-sm text-muted-foreground">
-                      {group.members.length} members • {group.expenses.length} expenses
-                    </p>
+                    <h3 className="font-medium">{entry.name}</h3>
+                    <p className="text-sm text-muted-foreground">{formatAddress(entry.creator)}</p>
                   </button>
                 ))}
               </CardContent>
             </Card>
           </div>
 
-          {/* Main Content */}
           <div className="lg:col-span-2 space-y-6">
-            {selectedGroup && (
+            {isLoading && (
+              <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  <RefreshCw className="h-5 w-5 mr-2 inline animate-spin" />
+                  Loading on-chain data...
+                </CardContent>
+              </Card>
+            )}
+
+            {!isLoading && onChainGroup && (
               <>
-                {/* Group Info & Add Expense */}
                 <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <div>
-                        <CardTitle>{selectedGroup.name}</CardTitle>
-                        <CardDescription>{selectedGroup.description}</CardDescription>
+                        <CardTitle>{selectedIndexEntry?.name ?? 'Group'}</CardTitle>
+                        <CardDescription>{selectedIndexEntry?.description}</CardDescription>
                       </div>
                       <Dialog open={isAddExpenseOpen} onOpenChange={setIsAddExpenseOpen}>
                         <DialogTrigger asChild>
@@ -285,7 +259,7 @@ export const GroupDashboard = () => {
                           <DialogHeader>
                             <DialogTitle>Add New Expense</DialogTitle>
                             <DialogDescription>
-                              Record a shared expense for the group
+                              Recorded on-chain. Select who paid for this expense.
                             </DialogDescription>
                           </DialogHeader>
                           <div className="space-y-4">
@@ -295,7 +269,7 @@ export const GroupDashboard = () => {
                                 id="description"
                                 placeholder="e.g., Dinner at restaurant"
                                 value={expenseDescription}
-                                onChange={(e) => setExpenseDescription(e.target.value)}
+                                onChange={e => setExpenseDescription(e.target.value)}
                               />
                             </div>
                             <div>
@@ -303,29 +277,39 @@ export const GroupDashboard = () => {
                               <Input
                                 id="amount"
                                 type="number"
-                                step="0.01"
-                                placeholder="0.00"
+                                step="1"
+                                min="1"
+                                placeholder="0"
                                 value={expenseAmount}
-                                onChange={(e) => setExpenseAmount(e.target.value)}
+                                onChange={e => setExpenseAmount(e.target.value)}
                               />
                             </div>
                             <div>
                               <Label htmlFor="paidBy">Paid By *</Label>
-                              <Select value={expensePaidBy} onValueChange={setExpensePaidBy}>
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Who paid for this?" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {selectedGroup.members.map(member => (
-                                    <SelectItem key={member} value={member}>
-                                      {member === publicKey?.toString() ? 'You' : formatAddress(member)}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                              <select
+                                id="paidBy"
+                                value={expensePaidBy}
+                                onChange={e => setExpensePaidBy(e.target.value)}
+                                className="w-full mt-1 px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                              >
+                                <option value="">Select who paid...</option>
+                                {onChainGroup?.members.map(member => {
+                                  const addr = member.toString();
+                                  return (
+                                    <option key={addr} value={addr}>
+                                      {addr === publicKey?.toString() ? `You (${addr.slice(0, 6)}...)` : `${addr.slice(0, 6)}...${addr.slice(-4)}`}
+                                    </option>
+                                  );
+                                })}
+                              </select>
                             </div>
-                            <Button onClick={addExpense} className="w-full" variant="hero">
-                              Add Expense
+                            <Button
+                              onClick={handleAddExpense}
+                              disabled={isSubmittingExpense}
+                              className="w-full"
+                              variant="hero"
+                            >
+                              {isSubmittingExpense ? 'Submitting...' : 'Add Expense'}
                             </Button>
                           </div>
                         </DialogContent>
@@ -334,26 +318,37 @@ export const GroupDashboard = () => {
                   </CardHeader>
                 </Card>
 
-                {/* Balances */}
                 <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
                   <CardHeader>
                     <CardTitle className="flex items-center">
                       <TrendingUp className="h-5 w-5 mr-2" />
                       Balances
                     </CardTitle>
+                    <CardDescription>
+                      Computed on-chain from actual recorded spend, not an even split
+                    </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-3">
-                      {Object.entries(balances).map(([member, balance]) => (
-                        <div key={member} className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
-                          <span className="font-medium">
-                            {member === publicKey?.toString() ? 'You' : formatAddress(member)}
-                          </span>
-                          <span className={`font-bold ${balance > 0 ? 'text-green-500' : balance < 0 ? 'text-red-500' : 'text-muted-foreground'}`}>
-                            {balance > 0 ? '+' : ''}₹{balance.toFixed(2)}
-                          </span>
-                        </div>
-                      ))}
+                      {onChainGroup.balances.map(b => {
+                        const owedInr = b.owed.toNumber() / 100; // paise -> INR
+                        const memberStr = b.member.toString();
+                        return (
+                          <div key={memberStr} className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
+                            <span className="font-medium">
+                              {memberStr === publicKey?.toString() ? 'You' : formatAddress(memberStr)}
+                            </span>
+                            <span
+                              className={`font-bold ${
+                                owedInr > 0 ? 'text-green-500' : owedInr < 0 ? 'text-red-500' : 'text-muted-foreground'
+                              }`}
+                            >
+                              {owedInr > 0 ? '+' : ''}
+                              ₹{Math.abs(owedInr).toFixed(2)}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
 
                     {settlements.length > 0 && (
@@ -362,18 +357,17 @@ export const GroupDashboard = () => {
                           <TrendingDown className="h-4 w-4 mr-2" />
                           Suggested Settlements
                         </h4>
+                        <p className="text-xs text-muted-foreground mb-3">
+                          These are suggestions only — settling still happens off-chain for now.
+                        </p>
                         <div className="space-y-2">
-                          {settlements.map((settlement, index) => (
-                            <div key={index} className="p-3 bg-accent/30 rounded-lg text-sm">
+                          {settlements.map((s, i) => (
+                            <div key={i} className="p-3 bg-accent/30 rounded-lg text-sm">
                               <span className="font-medium">
-                                {settlement.from === publicKey?.toString() ? 'You owe' : formatAddress(settlement.from) + ' owes'}
-                              </span>
-                              {' '}
-                              <span className="font-bold text-primary">₹{settlement.amount.toFixed(2)}</span>
-                              {' '}
-                              <span>
-                                to {settlement.to === publicKey?.toString() ? 'you' : formatAddress(settlement.to)}
-                              </span>
+                                {s.from === publicKey?.toString() ? 'You owe' : formatAddress(s.from) + ' owes'}
+                              </span>{' '}
+                              <span className="font-bold text-primary">₹{s.amount.toFixed(2)}</span>{' '}
+                              <span>to {s.to === publicKey?.toString() ? 'you' : formatAddress(s.to)}</span>
                             </div>
                           ))}
                         </div>
@@ -382,34 +376,37 @@ export const GroupDashboard = () => {
                   </CardContent>
                 </Card>
 
-                {/* Expenses List */}
                 <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
                   <CardHeader>
                     <CardTitle className="flex items-center">
                       <Receipt className="h-5 w-5 mr-2" />
-                      Recent Expenses
+                      Expenses
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {selectedGroup.expenses.length === 0 ? (
+                    {expenses.length === 0 ? (
                       <p className="text-muted-foreground text-center py-8">
                         No expenses yet. Add your first expense to get started!
                       </p>
                     ) : (
                       <div className="space-y-3">
-                        {selectedGroup.expenses.slice().reverse().map(expense => (
-                          <div key={expense.id} className="p-4 bg-muted/30 rounded-lg">
-                            <div className="flex items-center justify-between mb-2">
-                              <h4 className="font-medium">{expense.description}</h4>
-                              <span className="font-bold text-lg">₹{expense.amount.toFixed(2)}</span>
+                        {expenses
+                          .slice()
+                          .reverse()
+                          .map(expense => (
+                            <div key={expense.expenseId.toString()} className="p-4 bg-muted/30 rounded-lg">
+                              <div className="flex items-center justify-between mb-2">
+                                <h4 className="font-medium">{expense.description}</h4>
+                                <span className="font-bold text-lg">
+                                  ₹{(expense.amount.toNumber() / 100).toFixed(2)}
+                                </span>
+                              </div>
+                              <p className="text-sm text-muted-foreground">
+                                Paid by:{' '}
+                                {expense.payer.toString() === publicKey?.toString() ? 'You' : formatAddress(expense.payer.toString())}
+                              </p>
                             </div>
-                            <div className="text-sm text-muted-foreground">
-                              <p>Paid by: {expense.paidBy === publicKey?.toString() ? 'You' : formatAddress(expense.paidBy)}</p>
-                              <p>Split between: {expense.participants.length} people</p>
-                              <p>Date: {new Date(expense.date).toLocaleDateString()}</p>
-                            </div>
-                          </div>
-                        ))}
+                          ))}
                       </div>
                     )}
                   </CardContent>

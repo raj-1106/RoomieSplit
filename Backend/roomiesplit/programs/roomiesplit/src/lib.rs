@@ -6,12 +6,13 @@ declare_id!("BzEpHaoaEGSQwnFbSv8gVwpxh4tQBn2WS1pDTjUMbc3c");
 pub mod roomiesplit{
     use super::*;
 
-    pub fn create_group(ctx: Context<CreateGroup>, members: Vec<Pubkey>) -> Result<()> {
+    pub fn create_group(ctx: Context<CreateGroup>, group_id: u64, members: Vec<Pubkey>) -> Result<()> {
         let mut members = members;
         require!(members.len() < 5, RoomieError::TooManyMembers); // < 5, not <= 5, since creator adds one more
         members.push(ctx.accounts.creator.key());
 
         let group = &mut ctx.accounts.group;
+        group.group_id = group_id;
         group.creator = ctx.accounts.creator.key();
         group.total_expenses = 0;
         group.expense_count = 0;
@@ -26,16 +27,17 @@ pub mod roomiesplit{
         Ok(())
     }
 
-    pub fn add_expense(ctx: Context<AddExpense>, amount: u64, description: String) -> Result<()> {
-        require!(description.len() <= 64, RoomieError::DescriptionTooLong); // fixes bug #3
+    pub fn add_expense(ctx: Context<AddExpense>, amount: u64, description: String, paid_by: Pubkey) -> Result<()> {
+        require!(description.len() <= 64, RoomieError::DescriptionTooLong);
         require!(amount > 0, RoomieError::InvalidAmount);
 
         let group = &mut ctx.accounts.group;
-        let payer_key = ctx.accounts.payer.key();
-        require!(group.members.contains(&payer_key), RoomieError::NotMember);
+
+        // paid_by must be a member of the group
+        require!(group.members.contains(&paid_by), RoomieError::NotMember);
 
         let expense = &mut ctx.accounts.expense;
-        expense.payer = payer_key;
+        expense.payer = paid_by;  // record who actually paid (for balance tracking)
         expense.amount = amount;
         expense.description = description;
         expense.group = group.key();
@@ -44,9 +46,9 @@ pub mod roomiesplit{
         group.total_expenses = group.total_expenses.checked_add(amount).ok_or(RoomieError::MathOverflow)?;
         group.expense_count = group.expense_count.checked_add(1).ok_or(RoomieError::MathOverflow)?;
 
-        // find this payer's balance entry and credit what they spent
+        // credit the member who paid (not necessarily the tx signer)
         let balance = group.balances.iter_mut()
-            .find(|b| b.member == payer_key)
+            .find(|b| b.member == paid_by)
             .ok_or(RoomieError::NotMember)?;
         balance.spent = balance.spent.checked_add(amount as i64).ok_or(RoomieError::MathOverflow)?;
 
@@ -69,12 +71,13 @@ pub mod roomiesplit{
 }
 
 #[derive(Accounts)]
+#[instruction(group_id: u64)]
 pub struct CreateGroup<'info> {
     #[account(
         init,
         payer = creator,
         space = 8 + Group::MAX_SIZE,
-        seeds = [b"group", creator.key().as_ref()],
+        seeds = [b"group", creator.key().as_ref(), &group_id.to_le_bytes()],
         bump
     )]
     pub group: Account<'info, Group>,
@@ -88,7 +91,7 @@ pub struct CreateGroup<'info> {
 pub struct AddExpense<'info> {
     #[account(
         mut,
-        seeds = [b"group", group.creator.as_ref()],
+        seeds = [b"group", group.creator.as_ref(), &group.group_id.to_le_bytes()],
         bump
     )]
     pub group: Account<'info, Group>,
@@ -111,7 +114,7 @@ pub struct AddExpense<'info> {
 pub struct CalculateBalances<'info> {
     #[account(
         mut,
-        seeds = [b"group", group.creator.as_ref()],
+        seeds = [b"group", group.creator.as_ref(), &group.group_id.to_le_bytes()],
         bump
     )]
     pub group: Account<'info, Group>,
@@ -119,6 +122,7 @@ pub struct CalculateBalances<'info> {
 
 #[account]
 pub struct Group {
+    pub group_id: u64,
     pub creator: Pubkey,
     pub members: Vec<Pubkey>,
     pub total_expenses: u64,
@@ -127,11 +131,12 @@ pub struct Group {
 }
 
 impl Group {
-    pub const MAX_SIZE: usize = 32 // creator
-        + (32 * 5) // members
+    pub const MAX_SIZE: usize = 8 // group_id
+        + 32 //creator
+        + 4 + (32 * 5) // members (4 bytes for len prefix)
         + 8 // total_expenses
         + 8 // expense_count
-        + (5 * Balance::MAX_SIZE); // balances
+        + 4 + (5 * Balance::MAX_SIZE); // balances (4 bytes for len prefix)
 }
 
 #[account]
