@@ -35,6 +35,7 @@ pub mod roomiesplit{
 
         // paid_by must be a member of the group
         require!(group.members.contains(&paid_by), RoomieError::NotMember);
+        require!(group.members.contains(&ctx.accounts.payer.key()), RoomieError::NotMember);
 
         let expense = &mut ctx.accounts.expense;
         expense.payer = paid_by;  // record who actually paid (for balance tracking)
