@@ -11,12 +11,10 @@ import { useRoomiesplit, OnChainGroup, OnChainExpense } from '@/hooks/use-roomie
 import { ArrowLeft, Plus, Users, Receipt, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-// Local index of which on-chain groups this user created — localStorage here
-// only stores enough to know WHICH group PDAs to fetch, not the group's actual
-// data. All balances, expenses, and member lists come from the chain, fetched
-// fresh each time. Note: this only surfaces groups the connected wallet
-// CREATED, not groups they were added to as a member — getUserGroups() filters
-// by the creator field, so a member-only view would need a separate lookup.
+// Local index for group name/description — only the creator ever writes this
+// to localStorage, so non-creator members fall back to a generic label derived
+// from the on-chain group ID. All balances, expenses, and member lists still
+// come from the chain, fetched fresh each time.
 interface GroupIndexEntry {
   creator: string;
   groupId: string;
@@ -28,13 +26,15 @@ export const GroupDashboard = () => {
   const { connected, publicKey } = useWallet();
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { addExpense: addExpenseOnChain, calculateBalances: calculateBalancesOnChain, fetchGroup, fetchExpenses, settleDebt: settleDebtOnChain } = useRoomiesplit();
+  const { addExpense: addExpenseOnChain, calculateBalances: calculateBalancesOnChain, fetchGroup, fetchExpenses, settleDebt: settleDebtOnChain, getUserGroups } = useRoomiesplit();
 
   const [groupIndex, setGroupIndex] = useState<GroupIndexEntry[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [onChainGroup, setOnChainGroup] = useState<OnChainGroup | null>(null);
   const [expenses, setExpenses] = useState<OnChainExpense[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingGroups, setIsLoadingGroups] = useState(false);
+  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
 
   const [expenseDescription, setExpenseDescription] = useState('');
@@ -42,44 +42,135 @@ export const GroupDashboard = () => {
   const [expensePaidBy, setExpensePaidBy] = useState<string>('');
   const [isSubmittingExpense, setIsSubmittingExpense] = useState(false);
 
-  useEffect(() => {
-    if (connected) {
-      const savedIndex = JSON.parse(localStorage.getItem('groupIndex') || '[]') as GroupIndexEntry[];
-      setGroupIndex(savedIndex);
-      if (savedIndex.length > 0 && !selectedGroupId) {
-        setSelectedGroupId(savedIndex[0].groupId);
-      }
+  // Loads groups from localStorage only — instant, no RPC call.
+  const loadAllGroups = () => {
+    setIsLoadingGroups(true);
+    const savedIndex = JSON.parse(localStorage.getItem('groupIndex') || '[]') as GroupIndexEntry[];
+    setGroupIndex(savedIndex);
+    if (savedIndex.length > 0 && !selectedGroupId) {
+      setSelectedGroupId(savedIndex[0].groupId);
     }
-  }, [connected]);
+    setIsLoadingGroups(false);
+  };
+
+  // Manual on-chain scan — fetches ALL program accounts (heavy!).
+  // Only called when the user explicitly clicks Refresh, not on mount.
+  const scanChainForGroups = async () => {
+    if (isScanning) return;
+    setIsScanning(true);
+    const savedIndex = JSON.parse(localStorage.getItem('groupIndex') || '[]') as GroupIndexEntry[];
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('RPC timeout — getProgramAccounts took too long')), 15_000)
+      );
+      const onChainGroups = await Promise.race([getUserGroups(), timeoutPromise]);
+
+      const merged = onChainGroups.map(g => {
+        const localEntry = savedIndex.find(e => e.groupId === g.groupId.toString());
+        return {
+          creator: g.creator.toString(),
+          groupId: g.groupId.toString(),
+          name: localEntry?.name ?? `Group #${g.groupId.toString()}`,
+          description: localEntry?.description ?? '',
+        };
+      });
+
+      setGroupIndex(merged);
+      if (merged.length > 0 && !selectedGroupId) setSelectedGroupId(merged[0].groupId);
+      toast({ title: 'Scan complete', description: `Found ${merged.length} group(s) on-chain.` });
+    } catch (error: any) {
+      console.error('Chain scan error:', error?.message ?? error);
+      toast({
+        title: error?.message?.includes('timeout') ? 'RPC Slow' : 'Scan Failed',
+        description: error?.message?.includes('timeout')
+          ? 'Devnet timed out. Your created groups are still shown from cache.'
+          : 'Failed to scan on-chain groups.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsScanning(false);
+    }
+  };
 
   useEffect(() => {
-    if (selectedGroupId) {
+    if (connected && publicKey) {
+      loadAllGroups();
+    }
+  }, [connected, publicKey?.toString()]);
+
+  useEffect(() => {
+    if (selectedGroupId && groupIndex.length > 0) {
       const entry = groupIndex.find(g => g.groupId === selectedGroupId);
       if (entry) {
         loadGroupData(entry.creator, entry.groupId);
       }
     }
-  }, [selectedGroupId, groupIndex]);
+    // Intentionally omitting groupIndex from deps — we only want to refetch
+    // group data when the selected group changes, not every time the group list
+    // updates (e.g. after the background on-chain scan completes).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroupId]);
+
+  const pruneStaleEntry = (groupId: string) => {
+    const saved = JSON.parse(localStorage.getItem('groupIndex') || '[]') as GroupIndexEntry[];
+    const pruned = saved.filter(e => e.groupId !== groupId);
+    localStorage.setItem('groupIndex', JSON.stringify(pruned));
+    setGroupIndex(prev => prev.filter(e => e.groupId !== groupId));
+    if (selectedGroupId === groupId) {
+      setSelectedGroupId(pruned[0]?.groupId ?? null);
+      setOnChainGroup(null);
+      setExpenses([]);
+    }
+  };
+
+  const clearAllGroups = () => {
+    localStorage.removeItem('groupIndex');
+    setGroupIndex([]);
+    setSelectedGroupId(null);
+    setOnChainGroup(null);
+    setExpenses([]);
+  };
 
   const loadGroupData = async (creatorAddress: string, groupId: string) => {
-    setIsLoading(true);
+    setIsLoadingDetail(true);
+    setOnChainGroup(null);
+    setExpenses([]);
     try {
       const creatorPk = new PublicKey(creatorAddress);
-      const [group, groupExpenses] = await Promise.all([
-        fetchGroup(creatorPk, groupId),
-        fetchExpenses(creatorPk, groupId),
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('RPC timeout — account fetch took too long')), 12_000)
+      );
+      const [group, groupExpenses] = await Promise.race([
+        Promise.all([fetchGroup(creatorPk, groupId), fetchExpenses(creatorPk, groupId)]),
+        timeout,
       ]);
+
+      if (!group) {
+        // Account doesn't exist on-chain or has a corrupted layout — auto-prune it.
+        console.warn(`Group ${groupId} returned null from chain — pruning stale localStorage entry.`);
+        pruneStaleEntry(groupId);
+        toast({
+          title: 'Stale group removed',
+          description: 'This group no longer exists on-chain (likely created with an older program version). It has been removed from your list.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       setOnChainGroup(group);
       setExpenses(groupExpenses);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading group data:', error);
+      const isTimeout = error?.message?.includes('timeout');
       toast({
-        title: 'Error',
-        description: 'Failed to load group data from chain',
+        title: isTimeout ? 'RPC Slow' : 'Error',
+        description: isTimeout
+          ? 'Devnet RPC timed out fetching group data. Try clicking the group again in a moment.'
+          : 'Failed to load group data from chain',
         variant: 'destructive',
       });
     } finally {
-      setIsLoading(false);
+      setIsLoadingDetail(false);
     }
   };
 
@@ -180,17 +271,25 @@ export const GroupDashboard = () => {
       <div className="min-h-screen bg-gradient-hero flex items-center justify-center">
         <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 max-w-md">
           <CardHeader>
-            <CardTitle>No Groups Found</CardTitle>
+            <CardTitle>{isLoadingGroups ? 'Loading Groups...' : 'No Groups Found'}</CardTitle>
             <CardDescription>
-              You haven't created any on-chain groups yet. Note: this dashboard only shows groups
-              you created — groups you were added to as a member aren't listed here yet.
+              {isLoadingGroups
+                ? 'Scanning on-chain for groups you belong to...'
+                : 'You are not a member of any on-chain groups yet.'}
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <Button variant="hero" onClick={() => navigate('/create-group')} className="w-full">
-              Create Your First Group
-            </Button>
-          </CardContent>
+          {!isLoadingGroups && (
+            <CardContent>
+              <Button variant="hero" onClick={() => navigate('/create-group')} className="w-full">
+                Create Your First Group
+              </Button>
+            </CardContent>
+          )}
+          {isLoadingGroups && (
+            <CardContent className="flex justify-center py-4">
+              <RefreshCw className="h-6 w-6 animate-spin text-primary" />
+            </CardContent>
+          )}
         </Card>
       </div>
     );
@@ -220,9 +319,33 @@ export const GroupDashboard = () => {
           <div className="lg:col-span-1">
             <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
               <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Users className="h-5 w-5 mr-2" />
-                  Your Groups
+                <CardTitle className="flex items-center justify-between">
+                  <span className="flex items-center">
+                    <Users className="h-5 w-5 mr-2" />
+                    Your Groups
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs text-muted-foreground hover:text-primary"
+                      onClick={scanChainForGroups}
+                      disabled={isScanning}
+                      title="Scan on-chain for groups you belong to (may be slow)"
+                    >
+                      <RefreshCw className={`h-3 w-3 mr-1 ${isScanning ? 'animate-spin' : ''}`} />
+                      {isScanning ? 'Scanning...' : 'Refresh'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs text-muted-foreground hover:text-destructive"
+                      onClick={clearAllGroups}
+                      title="Clear stale group entries from local storage"
+                    >
+                      Clear All
+                    </Button>
+                  </div>
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -243,7 +366,7 @@ export const GroupDashboard = () => {
           </div>
 
           <div className="lg:col-span-2 space-y-6">
-            {isLoading && (
+            {isLoadingDetail && (
               <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
                 <CardContent className="py-8 text-center text-muted-foreground">
                   <RefreshCw className="h-5 w-5 mr-2 inline animate-spin" />
@@ -252,7 +375,7 @@ export const GroupDashboard = () => {
               </Card>
             )}
 
-            {!isLoading && onChainGroup && (
+            {!isLoadingDetail && onChainGroup && (
               <>
                 <Card className="bg-gradient-card backdrop-blur-sm border-primary/20 shadow-card">
                   <CardHeader>

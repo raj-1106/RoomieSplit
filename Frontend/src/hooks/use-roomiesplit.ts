@@ -170,10 +170,18 @@ export const useRoomiesplit = () => {
     try {
       const [groupPDA] = getGroupPDA(groupCreator, groupId);
       const groupAccount = await (program as any).account.group.fetch(groupPDA) as OnChainGroup;
-      const expenseCount = groupAccount.expenseCount.toNumber();
+      const rawCount = groupAccount.expenseCount.toNumber();
+
+      // Guard against corrupted account data (e.g. accounts created before a
+      // struct layout change, where expenseCount reads from the wrong offset
+      // and returns a huge garbage number that would loop forever).
+      if (rawCount > 1000) {
+        console.error(`fetchExpenses: expenseCount=${rawCount} looks corrupted, skipping. This group was likely created with an older program version — recreate it.`);
+        return [];
+      }
 
       const expenses: OnChainExpense[] = [];
-      for (let i = 0; i < expenseCount; i++) {
+      for (let i = 0; i < rawCount; i++) {
         try {
           const [expensePDA] = getExpensePDA(groupPDA, i);
           const expenseAccount = await (program as any).account.expense.fetch(expensePDA) as OnChainExpense;
@@ -190,21 +198,20 @@ export const useRoomiesplit = () => {
     }
   };
 
-  const getUserGroups = async (): Promise<OnChainGroup[]> => {
+  const getUserGroups = async (): Promise<Array<OnChainGroup & { groupPda: PublicKey }>> => {
     if (!program || !publicKey) return [];
 
     try {
-      // Fetch all group accounts where user is creator
-      const groups = await (program as any).account.group.all([
-        {
-          memcmp: {
-            offset: 8, // Skip discriminator
-            bytes: publicKey.toBase58(),
-          },
-        },
-      ]);
+      // No memcmp filter on `members` here — members is a variable-length Vec,
+      // so its byte offset isn't fixed and can't be targeted with memcmp.
+      // Fetching all groups and filtering client-side is the simplest correct
+      // approach at this project's scale (fine for dozens/hundreds of groups;
+      // would need an off-chain indexer at real scale).
+      const allGroups = await (program as any).account.group.all();
 
-      return groups.map((group: any) => group.account as OnChainGroup);
+      return allGroups
+        .filter((g: any) => g.account.members.some((m: PublicKey) => m.equals(publicKey)))
+        .map((g: any) => ({ ...g.account, groupPda: g.publicKey }));
     } catch (error) {
       console.error('Error fetching user groups:', error);
       return [];
