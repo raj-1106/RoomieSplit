@@ -28,7 +28,7 @@ export const GroupDashboard = () => {
   const { connected, publicKey } = useWallet();
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { addExpense: addExpenseOnChain, calculateBalances: calculateBalancesOnChain, fetchGroup, fetchExpenses } = useRoomiesplit();
+  const { addExpense: addExpenseOnChain, calculateBalances: calculateBalancesOnChain, fetchGroup, fetchExpenses, settleDebt: settleDebtOnChain } = useRoomiesplit();
 
   const [groupIndex, setGroupIndex] = useState<GroupIndexEntry[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
@@ -112,6 +112,19 @@ export const GroupDashboard = () => {
       console.error('Error adding expense:', error);
     } finally {
       setIsSubmittingExpense(false);
+    }
+  };
+
+  const handleSettle = async (fromAddress: string, toAddress: string, amount: number) => {
+    const entry = groupIndex.find(g => g.groupId === selectedGroupId);
+    if (!entry) return;
+    try {
+      const creatorPk = new PublicKey(entry.creator);
+      await settleDebtOnChain(creatorPk, entry.groupId, new PublicKey(toAddress), amount);
+      await calculateBalancesOnChain(creatorPk, entry.groupId);
+      await loadGroupData(entry.creator, entry.groupId);
+    } catch (error) {
+      console.error('Error settling:', error);
     }
   };
 
@@ -362,12 +375,19 @@ export const GroupDashboard = () => {
                         </p>
                         <div className="space-y-2">
                           {settlements.map((s, i) => (
-                            <div key={i} className="p-3 bg-accent/30 rounded-lg text-sm">
-                              <span className="font-medium">
-                                {s.from === publicKey?.toString() ? 'You owe' : formatAddress(s.from) + ' owes'}
-                              </span>{' '}
-                              <span className="font-bold text-primary">₹{s.amount.toFixed(2)}</span>{' '}
-                              <span>to {s.to === publicKey?.toString() ? 'you' : formatAddress(s.to)}</span>
+                            <div key={i} className="p-3 bg-accent/30 rounded-lg text-sm flex items-center justify-between">
+                              <div>
+                                <span className="font-medium">
+                                  {s.from === publicKey?.toString() ? 'You owe' : formatAddress(s.from) + ' owes'}
+                                </span>{' '}
+                                <span className="font-bold text-primary">₹{s.amount.toFixed(2)}</span>{' '}
+                                <span>to {s.to === publicKey?.toString() ? 'you' : formatAddress(s.to)}</span>
+                              </div>
+                              {s.from === publicKey?.toString() && (
+                                <Button size="sm" onClick={() => handleSettle(s.from, s.to, s.amount)}>
+                                  Settle
+                                </Button>
+                              )}
                             </div>
                           ))}
                         </div>

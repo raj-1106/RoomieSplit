@@ -1,9 +1,9 @@
 use anchor_lang::prelude::*;
 
-declare_id!("BzEpHaoaEGSQwnFbSv8gVwpxh4tQBn2WS1pDTjUMbc3c"); 
+declare_id!("BzEpHaoaEGSQwnFbSv8gVwpxh4tQBn2WS1pDTjUMbc3c");
 
 #[program]
-pub mod roomiesplit{
+pub mod roomiesplit {
     use super::*;
 
     pub fn create_group(ctx: Context<CreateGroup>, group_id: u64, members: Vec<Pubkey>) -> Result<()> {
@@ -20,7 +20,7 @@ pub mod roomiesplit{
         // initialize a zeroed balance entry per member NOW, not in calculate_balances
         group.balances = members
             .iter()
-            .map(|m| Balance { member: *m, owed: 0, spent: 0 })
+            .map(|m| Balance { member: *m, owed: 0, spent: 0, settled: 0 })
             .collect();
 
         group.members = members;
@@ -35,10 +35,12 @@ pub mod roomiesplit{
 
         // paid_by must be a member of the group
         require!(group.members.contains(&paid_by), RoomieError::NotMember);
+        // the signer submitting this instruction must also be a member —
+        // otherwise a total stranger could write fake expenses into the group
         require!(group.members.contains(&ctx.accounts.payer.key()), RoomieError::NotMember);
 
         let expense = &mut ctx.accounts.expense;
-        expense.payer = paid_by;  // record who actually paid (for balance tracking)
+        expense.payer = paid_by; // record who actually paid (for balance tracking)
         expense.amount = amount;
         expense.description = description;
         expense.group = group.key();
@@ -61,11 +63,49 @@ pub mod roomiesplit{
         let member_count = group.members.len() as u64;
         require!(member_count > 0, RoomieError::NoMembers);
 
-        let fair_share = (group.total_expenses / member_count) as i64;
+        let fair_share = group.total_expenses / member_count;
+        let remainder = group.total_expenses % member_count;
 
-        for balance in group.balances.iter_mut() {
-            balance.owed = balance.spent - fair_share; // positive = owed money back, negative = owes money
+        for (i, balance) in group.balances.iter_mut().enumerate() {
+            // distribute the leftover remainder one unit at a time to the first
+            // `remainder` members (by position in the balances vec), so shares
+            // sum to exactly total_expenses instead of losing rounding dust
+            let share = fair_share + if (i as u64) < remainder { 1 } else { 0 };
+            balance.owed = (balance.spent as i64 - share as i64) + balance.settled;
         }
+
+        Ok(())
+    }
+
+    pub fn settle_debt(ctx: Context<SettleDebt>, amount: u64) -> Result<()> {
+        require!(amount > 0, RoomieError::InvalidAmount);
+        let group = &mut ctx.accounts.group;
+        let debtor_key = ctx.accounts.debtor.key();
+        let creditor_key = ctx.accounts.creditor.key();
+
+        require!(group.members.contains(&debtor_key), RoomieError::NotMember);
+        require!(group.members.contains(&creditor_key), RoomieError::NotMember);
+
+        // real SOL transfer, debtor to creditor
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            anchor_lang::system_program::Transfer {
+                from: ctx.accounts.debtor.to_account_info(),
+                to: ctx.accounts.creditor.to_account_info(),
+            },
+        );
+        anchor_lang::system_program::transfer(cpi_ctx, amount)?;
+
+        // record the settlement so it survives future calculate_balances calls
+        let debtor_balance = group.balances.iter_mut()
+            .find(|b| b.member == debtor_key)
+            .ok_or(RoomieError::NotMember)?;
+        debtor_balance.settled = debtor_balance.settled.checked_add(amount as i64).ok_or(RoomieError::MathOverflow)?;
+
+        let creditor_balance = group.balances.iter_mut()
+            .find(|b| b.member == creditor_key)
+            .ok_or(RoomieError::NotMember)?;
+        creditor_balance.settled = creditor_balance.settled.checked_sub(amount as i64).ok_or(RoomieError::MathOverflow)?;
 
         Ok(())
     }
@@ -121,6 +161,25 @@ pub struct CalculateBalances<'info> {
     pub group: Account<'info, Group>,
 }
 
+#[derive(Accounts)]
+pub struct SettleDebt<'info> {
+    #[account(
+        mut,
+        seeds = [b"group", group.creator.as_ref(), &group.group_id.to_le_bytes()],
+        bump
+    )]
+    pub group: Account<'info, Group>,
+
+    #[account(mut)]
+    pub debtor: Signer<'info>, // the person paying signs — can't fake paying on someone else's behalf
+
+    /// CHECK: only receives lamports via system transfer, no data access needed
+    #[account(mut)]
+    pub creditor: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
 #[account]
 pub struct Group {
     pub group_id: u64,
@@ -133,7 +192,7 @@ pub struct Group {
 
 impl Group {
     pub const MAX_SIZE: usize = 8 // group_id
-        + 32 //creator
+        + 32 // creator
         + 4 + (32 * 5) // members (4 bytes for len prefix)
         + 8 // total_expenses
         + 8 // expense_count
@@ -158,10 +217,11 @@ pub struct Balance {
     pub member: Pubkey,
     pub owed: i64,
     pub spent: i64,
+    pub settled: i64, // running total of settlements — persists across calculate_balances recalcs
 }
 
 impl Balance {
-    pub const MAX_SIZE: usize = 32 + 8 + 8;
+    pub const MAX_SIZE: usize = 32 + 8 + 8 + 8; // +8 for settled
 }
 
 #[error_code]

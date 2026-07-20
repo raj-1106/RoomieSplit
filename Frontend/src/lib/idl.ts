@@ -209,6 +209,68 @@ const IDL_JSON = {
           }
         }
       ]
+    },
+    {
+      "name": "settle_debt",
+      "discriminator": [
+        133,
+        63,
+        5,
+        255,
+        106,
+        168,
+        238,
+        106
+      ],
+      "accounts": [
+        {
+          "name": "group",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  114,
+                  111,
+                  117,
+                  112
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "group.creator",
+                "account": "Group"
+              },
+              {
+                "kind": "account",
+                "path": "group.group_id",
+                "account": "Group"
+              }
+            ]
+          }
+        },
+        {
+          "name": "debtor",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "creditor",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -287,6 +349,10 @@ const IDL_JSON = {
           },
           {
             "name": "spent",
+            "type": "i64"
+          },
+          {
+            "name": "settled",
             "type": "i64"
           }
         ]

@@ -211,6 +211,41 @@ export const useRoomiesplit = () => {
     }
   };
 
+  const settleDebt = async (
+    groupCreator: PublicKey,
+    groupId: BN | number,
+    creditor: PublicKey,
+    amount: number // same raw unit as the displayed "owed" value — no conversion applied
+  ) => {
+    if (!program || !publicKey || !signTransaction) {
+      throw new Error('Wallet not connected or program not available');
+    }
+
+    try {
+      const [groupPDA] = getGroupPDA(groupCreator, groupId);
+      // We need to multiply by 100 because the on-chain program calculates balances in paise.
+      // So if the debt is ₹441.04, we need to add 44104 to the `settled` tracking variable on-chain.
+      const amountLamports = new BN(Math.round(amount * 100)); // 1:1 placeholder with paise — NOT a real SOL value, see README/roadmap note
+
+      const tx = await (program as any).methods
+        .settleDebt(amountLamports)
+        .accounts({
+          group: groupPDA,
+          debtor: publicKey,
+          creditor: creditor,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      toast({ title: "Settled!", description: `Transaction: ${tx.slice(0, 8)}...` });
+      return tx;
+    } catch (error) {
+      console.error('Error settling debt:', error);
+      toast({ title: "Error", description: "Failed to settle debt", variant: "destructive" });
+      throw error;
+    }
+  };
+
   return {
     createGroup,
     addExpense,
@@ -218,5 +253,6 @@ export const useRoomiesplit = () => {
     fetchGroup,
     fetchExpenses,
     getUserGroups,
+    settleDebt,
   };
 };
